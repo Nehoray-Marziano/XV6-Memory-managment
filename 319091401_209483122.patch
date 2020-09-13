@@ -1,0 +1,1815 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 0000000..06b0842
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,3 @@
++{
++    "C_Cpp.dimInactiveRegions": false
++}
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 09d790c..9c74f17 100644
+--- a/Makefile
++++ b/Makefile
+@@ -71,26 +71,37 @@ QEMU = $(shell if which qemu > /dev/null; \
+ 	echo "***" 1>&2; exit 1)
+ endif
+ 
++ifndef SELECTION
++SELECTION := SCFIFO
++endif
++
++ifndef VERBOSE_PRINT
++VERBOSE_PRINT := FALSE
++endif
++
++
+ CC = $(TOOLPREFIX)gcc
+ AS = $(TOOLPREFIX)gas
+ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+ OBJDUMP = $(TOOLPREFIX)objdump
+ CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
++#CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -fvar-tracking -fvar-tracking-assignments -O0 -g -Wall -MD -gdwarf-2 -m32 -Werror -fno-omit-frame-pointer
+ CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
++CFLAGS += -D $(SELECTION)
++
++ifeq ($(VERBOSE_PRINT),TRUE)
++CFLAGS += -D VERBOSE_PRINT_TRUE
++else ifeq ($(VERBOSE_PRINT),FALSE)
++CFLAGS += -D VERBOSE_PRINT_FALSE
++endif
++
++
+ ASFLAGS = -m32 -gdwarf-2 -Wa,-divide
+ # FreeBSD ld wants ``elf_i386_fbsd''
+ LDFLAGS += -m $(shell $(LD) -V | grep elf_i386 2>/dev/null | head -n 1)
+ 
+-# Disable PIE when possible (for Ubuntu 16.10 toolchain)
+-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
+-CFLAGS += -fno-pie -no-pie
+-endif
+-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]nopie'),)
+-CFLAGS += -fno-pie -nopie
+-endif
+-
+-xv6.img: bootblock kernel
++xv6.img: bootblock kernel fs.img
+ 	dd if=/dev/zero of=xv6.img count=10000
+ 	dd if=bootblock of=xv6.img conv=notrunc
+ 	dd if=kernel of=xv6.img seek=1 conv=notrunc
+@@ -141,7 +152,7 @@ tags: $(OBJS) entryother.S _init
+ 	etags *.S *.c
+ 
+ vectors.S: vectors.pl
+-	./vectors.pl > vectors.S
++	perl vectors.pl > vectors.S
+ 
+ ULIB = ulib.o usys.o printf.o umalloc.o
+ 
+@@ -172,6 +183,7 @@ UPROGS=\
+ 	_grep\
+ 	_init\
+ 	_kill\
++	_assTest\
+ 	_ln\
+ 	_ls\
+ 	_mkdir\
+@@ -190,8 +202,8 @@ fs.img: mkfs README $(UPROGS)
+ clean: 
+ 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
+ 	*.o *.d *.asm *.sym vectors.S bootblock entryother \
+-	initcode initcode.out kernel xv6.img fs.img kernelmemfs \
+-	xv6memfs.img mkfs .gdbinit \
++	initcode initcode.out kernel xv6.img fs.img kernelmemfs mkfs \
++	.gdbinit \
+ 	$(UPROGS)
+ 
+ # make a printout
+@@ -248,7 +260,7 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
+ # check in that version.
+ 
+ EXTRA=\
+-	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
++	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c myMemTest.c\
+ 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
+ 	printf.c umalloc.c\
+ 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
+@@ -283,4 +295,4 @@ tar:
+ 	cp dist/* dist/.gdbinit.tmpl /tmp/xv6
+ 	(cd /tmp; tar cf - xv6) | gzip >xv6-rev10.tar.gz  # the next one will be 10 (9/17)
+ 
+-.PHONY: dist-test dist
++.PHONY: dist-test dist
+\ No newline at end of file
+diff --git a/assTest.c b/assTest.c
+new file mode 100644
+index 0000000..cf3e9f6
+--- /dev/null
++++ b/assTest.c
+@@ -0,0 +1,94 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "memlayout.h"
++#include "mmu.h"
++
++#define N_PAGES 24
++
++char* data[N_PAGES];
++
++volatile int main(int argc, char *argv[]) {
++
++	int i = 0;
++	int n = N_PAGES;
++
++	for (i = 0; i < n ;)
++	{
++		data[i] = sbrk(PGSIZE);
++		data[i][0] = 00 + i;
++		data[i][1] = 10 + i;
++		data[i][2] = 20 + i;
++		data[i][3] = 30 + i;
++		data[i][4] = 40 + i;
++		data[i][5] = 50 + i;
++		data[i][6] = 60 + i;
++		data[i][7] = 70 + i;
++		printf(1, "allocated new page #%d in: %x\n", i, data[i]);
++		i++;
++	}
++
++	
++	int j;
++	for(j = 1; j < n; j++)
++	{
++		printf(1,"j:  %d\n",j);
++
++		for(i = 0; i < j; i++) {
++			data[i][10] = 2; // access to the i-th page
++			printf(1,"%d, ",i);
++		}
++		printf(1,"\n");
++	}
++
++	int k;
++	int pid = fork();
++	if (pid)
++		wait();
++	else {
++		printf(1, "\nGo through same 8 pages and different 8 others\n");
++		for(j = 0; j < 8; j++){
++			for(i = 20; i < 24; i++) {
++				data[i][10] = 1;
++				printf(1,"%d, ",i);
++			}
++			printf(1,"\n");
++			switch (j%4) {
++			case 0:
++				for(k = 0; k < 4; k++) {
++					data[k][10] = 1;
++					printf(1,"%d, ",k);
++				}
++				break;
++			case 1:
++				for(k = 4; k < 8; k++) {
++					data[k][10] = 1;
++					printf(1,"%d, ",k);
++				}
++				break;
++			case 2:
++				for(k = 8; k < 12; k++) {
++					data[k][10] = 1;
++					printf(1,"%d, ",k);
++				}
++				break;
++			case 3:
++				for(k = 12; k < 16; k++) {
++					data[k][10] = 1;
++					printf(1,"%d, ",k);
++				}
++				break;
++			}
++			
++			// data[j][10] = 0;
++			// printf(1,"%d, ",j);
++			printf(1,"\n");
++		}
++	}
++	exit();
++	return 0;
++}
+\ No newline at end of file
+diff --git a/defs.h b/defs.h
+index be45622..3742dff 100644
+--- a/defs.h
++++ b/defs.h
+@@ -4,6 +4,7 @@ struct file;
+ struct inode;
+ struct pipe;
+ struct proc;
++struct page;
+ struct rtcdate;
+ struct spinlock;
+ struct sleeplock;
+@@ -24,7 +25,8 @@ void            panic(char*) __attribute__((noreturn));
+ 
+ // exec.c
+ int             exec(char*, char**);
+-
++void            backup_and_reset_all(struct page*, int*, int*, int*);
++void            restore(struct page*, int*, int*, int*);
+ // file.c
+ struct file*    filealloc(void);
+ void            fileclose(struct file*);
+@@ -78,6 +80,11 @@ char*           kalloc(void);
+ void            kfree(char*);
+ void            kinit1(void*, void*);
+ void            kinit2(void*, void*);
++void            kinc(char*);
++int             getRefs(char*);
++void            kdec(char*);
++
++int             getNumFreePages(void);
+ 
+ // kbd.c
+ void            kbdintr(void);
+@@ -130,7 +137,22 @@ void            userinit(void);
+ int             wait(void);
+ void            wakeup(void*);
+ void            yield(void);
+-
++int             get_free_offset(void);
++void            insert_to_RAM_queue(int);
++void            insert_to_offsets_queue(int);
++void            move_forward_in_offsets_queue(void);
++void            move_forward_in_inRAM_queue(int);
++int             next_in_line(void);
++int             get_free_offset(void);
++void            deallocate_page(uint);
++void            aging(void);
++void            advance_for_AQ(void);
++int             select_for_NFUA(void);
++int             select_for_LAPA(void);
++int             select_for_SCFIFO(void);
++int             select_for_AQ(void);
++int             getNumVirtPages(void);
++int             getNumPhysPages(void);
+ // swtch.S
+ void            swtch(struct context**, struct context*);
+ 
+@@ -186,7 +208,7 @@ void            kvmalloc(void);
+ pde_t*          setupkvm(void);
+ char*           uva2ka(pde_t*, char*);
+ int             allocuvm(pde_t*, uint, uint);
+-int             deallocuvm(pde_t*, uint, uint);
++int             deallocuvm(pde_t*, uint, uint, int flag);
+ void            freevm(pde_t*);
+ void            inituvm(pde_t*, char*, uint);
+ int             loaduvm(pde_t*, char*, struct inode*, uint, uint);
+@@ -195,6 +217,13 @@ void            switchuvm(struct proc*);
+ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
+-
++pde_t*          cowuvm(pde_t*, uint);
++int            pagefault(uint);
++char*           swap_out(pde_t*);
++uint            select_page(void);
++uint            global_walkpgdir(pde_t*, void*, int);
++int             global_mappages(pde_t*, void*, uint, uint, int);
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
++
++
+diff --git a/exec.c b/exec.c
+index b40134f..5df5b1e 100644
+--- a/exec.c
++++ b/exec.c
+@@ -14,9 +14,9 @@ exec(char *path, char **argv)
+   int i, off;
+   uint argc, sz, sp, ustack[3+MAXARG+1];
+   struct elfhdr elf;
+-  struct inode *ip;
+   struct proghdr ph;
+   pde_t *pgdir, *oldpgdir;
++  struct inode *ip;
+   struct proc *curproc = myproc();
+ 
+   begin_op();
+@@ -29,6 +29,17 @@ exec(char *path, char **argv)
+   ilock(ip);
+   pgdir = 0;
+ 
++////////////////////ASSIGNMENT 3////////////////////////
++/**going to initialize all the fields for the new program**/
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++    struct page pages_backup[MAX_TOTAL_PAGES];
++    int indexes_backup[5];
++    int ram_queue_backup[MAX_PYSC_PAGES];
++    int offsets_queue_backup[MAX_PYSC_PAGES];
++    backup_and_reset_all(pages_backup, indexes_backup, ram_queue_backup, offsets_queue_backup);
++  #endif
++  /////////////////////////END//////////////////////
++
+   // Check ELF header
+   if(readi(ip, (char*)&elf, 0, sizeof(elf)) != sizeof(elf))
+     goto bad;
+@@ -55,9 +66,10 @@ exec(char *path, char **argv)
+       goto bad;
+     if(loaduvm(pgdir, (char*)ph.vaddr, ip, ph.off, ph.filesz) < 0)
+       goto bad;
+-  }
++      }
+   iunlockput(ip);
+   end_op();
++  
+   ip = 0;
+ 
+   // Allocate two pages at the next page boundary.
+@@ -99,11 +111,26 @@ exec(char *path, char **argv)
+   curproc->sz = sz;
+   curproc->tf->eip = elf.entry;  // main
+   curproc->tf->esp = sp;
++
++  /////////// ASSIGNMENT 3////////////
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++  /**make the new swapfile for the proccess**/
++    if(curproc->pid > 2){
++      removeSwapFile(curproc);
++      createSwapFile(curproc);
++    }
++  #endif
++  //////////////////END///////////////////
++
+   switchuvm(curproc);
+   freevm(oldpgdir);
+   return 0;
+ 
+  bad:
++
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++    restore(pages_backup, indexes_backup, ram_queue_backup, offsets_queue_backup);
++  #endif
+   if(pgdir)
+     freevm(pgdir);
+   if(ip){
+@@ -112,3 +139,81 @@ exec(char *path, char **argv)
+   }
+   return -1;
+ }
++
++
++
++//////////////////////HELPER FUNCTION FOR ASS3/////////////////////////
++void backup_and_reset_all(struct page* backup_pages, int* indexes_backup, int* in_RAM_backup, int* offset_arr_backup){
++  struct proc* curproc = myproc();
++  int i;
++
++  for(i = 0; i<MAX_TOTAL_PAGES; i++){
++    /**backup everything from 'pages' in curproc**/
++    backup_pages[i].offset_in_swapfile = curproc->pages[i].offset_in_swapfile;
++    backup_pages[i].in_RAM = curproc->pages[i].in_RAM;  
++    backup_pages[i].virtual_addr = curproc->pages[i].virtual_addr;
++    backup_pages[i].allocated = curproc->pages[i].allocated;
++
++    /**  clean everything in 'pages' **/
++    curproc->pages[i].virtual_addr = 0;
++    curproc->pages[i].offset_in_swapfile = -1;
++    curproc->pages[i].in_RAM = 0;
++    curproc->pages[i].allocated = 0;
++  }
++    for (i = 0; i < MAX_PYSC_PAGES; ++i) {
++    /**  backup pages array (in_RAM) **/
++    in_RAM_backup[i] = curproc->inRAM[i];
++    offset_arr_backup[i] = curproc->free_swapfile_offsets[i];
++    
++    
++    /**  clear 'pages' **/
++    curproc->inRAM[i] = -1;
++    curproc->free_swapfile_offsets[i] = -1;
++  }
++
++
++
++    /**  'index' is like this special array to save special fields from curproc. we could've not use it but the signature of the function would have been much longer **/
++  indexes_backup[0] = curproc->free_swapfile_offset;
++  indexes_backup[1] = curproc->swapped_pages_now;
++  indexes_backup[2] = curproc->page_faults_now;
++  indexes_backup[3] = curproc->total_swaps;
++  indexes_backup[4] = curproc->total_allocated_pages;
++
++    /**  now clear everything **/
++  curproc->free_swapfile_offset = 0;
++  curproc->swapped_pages_now = 0;
++  curproc->page_faults_now = 0;
++  curproc->total_swaps = 0;
++  curproc->total_allocated_pages = 0;
++
++  
++
++}
++
++void
++restore(struct page* backup_pages, int* indexes_backup, int* in_RAM_backup, int* offset_arr_backup)
++{ //this function is calles only if exec has failed. if that happend, we need to restore everything we backed up
++  struct proc *curproc = myproc();
++  int i;
++  for (i = 0; i < MAX_TOTAL_PAGES; ++i) {
++    /**  restore everything in 'pages' **/
++    curproc->pages[i].virtual_addr = backup_pages[i].virtual_addr;
++    curproc->pages[i].offset_in_swapfile = backup_pages[i].offset_in_swapfile;
++    curproc->pages[i].in_RAM = backup_pages[i].in_RAM;
++    curproc->pages[i].allocated = backup_pages[i].allocated;
++  }
++
++  for (i = 0 ; i < MAX_PYSC_PAGES; ++i) {
++    curproc->inRAM[i] = in_RAM_backup[i];
++    curproc->free_swapfile_offsets[i] = offset_arr_backup[i];
++  }
++
++
++  /**  restore the special indexes we wrote about **/
++  curproc->free_swapfile_offset = indexes_backup[0] ;
++  curproc->swapped_pages_now = indexes_backup[1];
++  curproc->page_faults_now = indexes_backup[2];
++  curproc->total_swaps = indexes_backup[3];
++  curproc->total_allocated_pages = indexes_backup[4];
++}
+\ No newline at end of file
+diff --git a/fs.c b/fs.c
+index 966e978..a9f2d1c 100644
+--- a/fs.c
++++ b/fs.c
+@@ -807,3 +807,4 @@ readFromSwapFile(struct proc * p, char* buffer, uint placeOnFile, uint size)
+ 
+   return fileread(p->swapFile, buffer,  size);
+ }
++
+diff --git a/kalloc.c b/kalloc.c
+index 14cd4f4..e2fe263 100644
+--- a/kalloc.c
++++ b/kalloc.c
+@@ -9,18 +9,27 @@
+ #include "mmu.h"
+ #include "spinlock.h"
+ 
++#define MAXPAGES (PHYSTOP / PGSIZE)
++
++
+ void freerange(void *vstart, void *vend);
+ extern char end[]; // first address after kernel loaded from ELF file
+                    // defined by the kernel linker script in kernel.ld
+ 
+ struct run {
+   struct run *next;
++  int ref;
+ };
+ 
+ struct {
+   struct spinlock lock;
+   int use_lock;
+   struct run *freelist;
++  // DEP: For COW fork, we can't store the run in the 
++  //      physical page, because we need space for the ref
++  //      count.  Move to the kmem struct.
++  struct run runs[MAXPAGES];
++  int numFreePages;
+ } kmem;
+ 
+ // Initialization happens in two phases.
+@@ -34,6 +43,7 @@ kinit1(void *vstart, void *vend)
+   initlock(&kmem.lock, "kmem");
+   kmem.use_lock = 0;
+   freerange(vstart, vend);
++  kmem.numFreePages=0;
+ }
+ 
+ void
+@@ -60,7 +70,8 @@ void
+ kfree(char *v)
+ {
+   struct run *r;
+-
++  kmem.numFreePages=kmem.numFreePages+1;
++  
+   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
+     panic("kfree");
+ 
+@@ -83,7 +94,8 @@ char*
+ kalloc(void)
+ {
+   struct run *r;
+-
++   kmem.numFreePages=kmem.numFreePages-1;
++   
+   if(kmem.use_lock)
+     acquire(&kmem.lock);
+   r = kmem.freelist;
+@@ -94,3 +106,44 @@ kalloc(void)
+   return (char*)r;
+ }
+ 
++/////////////////ASSIGNMENT 3////////////////////////
++void
++kinc(char *v) //increase number of 'links' to the page
++{
++  struct run *r;
++
++  if(kmem.use_lock)
++    acquire(&kmem.lock);
++  r = &kmem.runs[(V2P(v) / PGSIZE)];
++  r->ref += 1;
++  if(kmem.use_lock)
++    release(&kmem.lock);
++}
++
++void kdec(char* v){ //decrease number of 'links' to the page
++  struct run *r;
++
++  if(kmem.use_lock)
++    acquire(&kmem.lock);
++  r = &kmem.runs[(V2P(v) / PGSIZE)];
++  r->ref -= 1;
++  if(kmem.use_lock)
++    release(&kmem.lock);
++}
++
++int getRefs(char* v){
++  struct run* r;
++  r = &kmem.runs[(V2P(v)/PGSIZE)];
++  return r->ref; 
++}
++////////////////END/////////////////////////
++int
++getNumFreePages(void)
++{
++if(kmem.use_lock)
++acquire(&kmem.lock);
++int r = kmem.numFreePages;
++if(kmem.use_lock)
++release(&kmem.lock);
++return (r);
++}
+\ No newline at end of file
+diff --git a/mmu.h b/mmu.h
+index a82d8e2..78b0823 100644
+--- a/mmu.h
++++ b/mmu.h
+@@ -11,6 +11,11 @@
+ 
+ #define CR4_PSE         0x00000010      // Page size extension
+ 
++// Page fault error codes
++#define FEC_PR		0x00000001	// Page fault caused by protection violation
++#define FEC_WR		0x00000002	// Page fault caused by a write
++#define FEC_U		  0x00000004	// Page fault occured while in user mode
++
+ // various segment selectors.
+ #define SEG_KCODE 1  // kernel code
+ #define SEG_KDATA 2  // kernel data+stack
+@@ -53,12 +58,25 @@ struct segdesc {
+ #define DPL_USER    0x3     // User DPL
+ 
+ // Application segment type bits
+-#define STA_X       0x8     // Executable segment
++#define STA_A       0x1     // Accessed
+ #define STA_W       0x2     // Writeable (non-executable segments)
+ #define STA_R       0x2     // Readable (executable segments)
++#define STA_E       0x4     // Expand down (non-executable segments)
++#define STA_C       0x4     // Conforming code segment (executable only)
++#define STA_X       0x8     // Executable segment
++
+ 
+ // System segment type bits
++#define STS_T16A    0x1     // Available 16-bit TSS
++#define STS_LDT     0x2     // Local Descriptor Table
++#define STS_T16B    0x3     // Busy 16-bit TSS
++#define STS_CG16    0x4     // 16-bit Call Gate
++#define STS_TG      0x5     // Task Gate / Coum Transmitions
++#define STS_IG16    0x6     // 16-bit Interrupt Gate
++#define STS_TG16    0x7     // 16-bit Trap Gate
+ #define STS_T32A    0x9     // Available 32-bit TSS
++#define STS_T32B    0xB     // Busy 32-bit TSS
++#define STS_CG32    0xC     // 32-bit Call Gate
+ #define STS_IG32    0xE     // 32-bit Interrupt Gate
+ #define STS_TG32    0xF     // 32-bit Trap Gate
+ 
+@@ -72,6 +90,7 @@ struct segdesc {
+ 
+ // page directory index
+ #define PDX(va)         (((uint)(va) >> PDXSHIFT) & 0x3FF)
++#define PTE_PG 0x200 // Paged out to secondary storage 
+ 
+ // page table index
+ #define PTX(va)         (((uint)(va) >> PTXSHIFT) & 0x3FF)
+@@ -94,12 +113,31 @@ struct segdesc {
+ #define PTE_P           0x001   // Present
+ #define PTE_W           0x002   // Writeable
+ #define PTE_U           0x004   // User
++#define PTE_PWT         0x008   // write-through
++#define PTE_PCD         0x010   // cache disable
++#define PTE_AC          0x020   // accessed
++#define PTE_D           0x040   // dirty
+ #define PTE_PS          0x080   // Page Size
++#define PTE_MBZ         0x180   // must be zero
++#define PTE_COW         0x800   //copy-on-write
++
++
++//small 'functions' to turn on the appropriate flags
++#define TURN_ON_PTE_PG(pte)      ((uint)(pte) | PTE_PG)
++#define TURN_ON_PTE_P(pte)       ((uint)(pte) | PTE_P)
++#define TURN_ON_PTE_A(pte)       ((uint)(pte) | PTE_AC)
++//small 'functions' to turn on the appropriate flags (everything is true, except for the appropriate the flag)
++#define TURN_OFF_PTE_PG(pte)     ((uint)(pte) & ~PTE_PG)
++#define TURN_OFF_PTE_P(pte)      ((uint)(pte) & ~PTE_P)
++#define TURN_OFF_PTE_AC(pte)      ((uint)(pte) & ~PTE_AC)
++
++
+ 
+ // Address in page table or page directory entry
+ #define PTE_ADDR(pte)   ((uint)(pte) & ~0xFFF)
+ #define PTE_FLAGS(pte)  ((uint)(pte) &  0xFFF)
+ 
++
+ #ifndef __ASSEMBLER__
+ typedef uint pte_t;
+ 
+diff --git a/proc.c b/proc.c
+index 806b1b1..104f692 100644
+--- a/proc.c
++++ b/proc.c
+@@ -6,6 +6,7 @@
+ #include "x86.h"
+ #include "proc.h"
+ #include "spinlock.h"
++int get_free_offset();
+ 
+ struct {
+   struct spinlock lock;
+@@ -111,7 +112,36 @@ found:
+   p->context = (struct context*)sp;
+   memset(p->context, 0, sizeof *p->context);
+   p->context->eip = (uint)forkret;
++  
++  //////////////////////////ASSIGNMENT 3////////////
++  /**initialization of all the fields**/
++  p->free_swapfile_offset = 0;
++  p->swapped_pages_now = 0;
++  p->total_swaps = 0;
++  p->page_faults_now = 0;
++  p->total_page_faults = 0;
++  p->total_allocated_pages = 0;
+ 
++  int i;
++  for(i = 0; i<MAX_TOTAL_PAGES; i++){
++    p->pages[i].virtual_addr = 0;
++    p->pages[i].offset_in_swapfile = -1;
++    p->pages[i].in_RAM = 0;
++    p->pages[i].allocated = 0;
++    
++    #if defined(LAPA)// in this policy, we want to initialize the age to be the largest number there is..
++      p->pages[i].age = 0xFFFFFFFF;
++    #else
++      p->pages[i].age = 0x00000000;
++    #endif
++  }
++  int j;
++  for(j = 0; j<MAX_PYSC_PAGES;j++){ //there is nothing and the ram, and there is no need to use the queue for the swapfile's offsets
++    p->inRAM[j] = -1;
++    p->free_swapfile_offsets[j] = -1;
++  }
++  //createSwapFile(p);  //new swap file for a new process
++//////////////////END///////////////////
+   return p;
+ }
+ 
+@@ -166,7 +196,9 @@ growproc(int n)
+     if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
+       return -1;
+   } else if(n < 0){
+-    if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
++    curproc->total_allocated_pages += (PGROUNDUP(n)/PGSIZE);//subtracts the number of allocated pages (if the number is positive, it will be done in allocuvm)
++
++    if((sz = deallocuvm(curproc->pgdir, sz, sz + n,  1)) == 0)  //we do want deallocate_page to be called
+       return -1;
+   }
+   curproc->sz = sz;
+@@ -190,7 +222,7 @@ fork(void)
+   }
+ 
+   // Copy process state from proc.
+-  if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
++  if((np->pgdir = cowuvm(curproc->pgdir, curproc->sz)) == 0){ // we call the COW function instead of copyuvm
+     kfree(np->kstack);
+     np->kstack = 0;
+     np->state = UNUSED;
+@@ -212,6 +244,44 @@ fork(void)
+ 
+   pid = np->pid;
+ 
++////////////////ASSIGNMENT 3///////////////////
++#if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++  /**first, we will check if the proccess we have is not init or sh, because if so, we don't want to copy all the data from it (might be too big or something like that)**/
++  if(np->pid > 2){ //if so, then we can copy everything to np (in case of course, we are in one of the policies)
++    createSwapFile(np);
++    np->free_swapfile_offset = curproc->free_swapfile_offset;
++    np->swapped_pages_now = curproc->swapped_pages_now;
++    np->total_swaps = 0;
++    np->total_allocated_pages = curproc->total_allocated_pages;
++    np->page_faults_now = 0;
++    
++    int i;
++    for(i = 0; i < MAX_TOTAL_PAGES; i++){ // we want to deep copy the 'pages' field from the father proccess
++      np->pages[i].virtual_addr = curproc->pages[i].virtual_addr;
++      np->pages[i].offset_in_swapfile = curproc->pages[i].offset_in_swapfile;
++      np->pages[i].age = curproc->pages[i].age;
++      np->pages[i].is_swapped = curproc->pages[i].is_swapped;
++      np->pages[i].allocated = curproc->pages[i].allocated;
++      np->pages[i].in_RAM = curproc->pages[i].in_RAM;
++    }
++    /**copy which pages are in the main memory, and what free offsets we have in the swapfile (according to what we already know from curproc)**/
++    int j;
++    for(j = 0; j<MAX_PYSC_PAGES; j++){
++      np->free_swapfile_offsets[j] = curproc->free_swapfile_offsets[j];
++      np->inRAM[j] = curproc->inRAM[j];
++    }
++    /**now, we want to copy everything from curproc's swap file into np's swap file (using readFromSwapFile and WriteToSwapFile)**/
++    int k;
++    char* page_for_copying = kalloc(); // this is the address for the page we are going to use in the readFromSwapFile and WriteToSwapFile functions (which pretty much require a page)
++    for(k = 0; k < curproc->swapped_pages_now; k++){// we want the np's swap file to be identical to the curproc's swap file
++      uint offset = k*PGSIZE; // in order to have the offset for the readFromSwapFile and WriteToSwapFile functions
++      readFromSwapFile(curproc, page_for_copying, offset, PGSIZE);  //copy from curproc
++      writeToSwapFile(np, page_for_copying, offset, PGSIZE);  // paste in np
++    }
++    kfree(page_for_copying); // we finished copying so we don't need the page anymore
++  }
++  #endif
++////////////////////////END//////////////////////
+   acquire(&ptable.lock);
+ 
+   np->state = RUNNABLE;
+@@ -247,6 +317,10 @@ exit(void)
+   end_op();
+   curproc->cwd = 0;
+ 
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++    removeSwapFile(curproc);
++  #endif
++
+   acquire(&ptable.lock);
+ 
+   // Parent might be sleeping in wait().
+@@ -351,8 +425,13 @@ scheduler(void)
+       c->proc = 0;
+     }
+     release(&ptable.lock);
+-
+   }
++  #if defined(AQ) // we need to advance the queue if we took the first (AQ policy)
++    advance_for_AQ();
++  
++  #elif (defined(NFUA) || defined(LAPA))  //  both policies use the aging mechanism, so we keep aging each proccess!
++      aging();
++  #endif
+ }
+ 
+ // Enter scheduler.  Must hold only ptable.lock
+@@ -476,6 +555,16 @@ wakeup(void *chan)
+ // Kill the process with the given pid.
+ // Process won't exit until it returns
+ // to user space (see trap in trap.c).
++
++
++int getNumPhysPages(){
++  return 1;
++}
++
++int getNumVirtPages(){
++  return 1;
++}
++
+ int
+ kill(int pid)
+ {
+@@ -521,9 +610,10 @@ procdump(void)
+       continue;
+     if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+       state = states[p->state];
+-    else
+-      state = "???";
+-    cprintf("%d %s %s", p->pid, state, p->name);
++    else{  state = "???";}
++    
++    cprintf("%d  %s   Allocated MemPages:%d    Paged Out:%d     Page Faults:%d     Total num Paged Out:%d      %s\n", 
++    p->pid, state, (PGROUNDUP(p->sz)/PGSIZE) , p->swapped_pages_now, p->page_faults_now,p->total_swaps, p->name  );
+     if(p->state == SLEEPING){
+       getcallerpcs((uint*)p->context->ebp+2, pc);
+       for(i=0; i<10 && pc[i] != 0; i++)
+@@ -531,4 +621,248 @@ procdump(void)
+     }
+     cprintf("\n");
+   }
++  cprintf("Number of free pages:%d \n",getNumFreePages()); 
++}
++
++void insert_to_RAM_queue(int page_index){
++  struct proc *curproc = myproc();
++  int i;
++  for (i = 0; curproc->inRAM[i] != -1; i++) {
++    if (i == MAX_PYSC_PAGES)
++      panic("insert to RAM queue: error in inerstion!");
++  }
++  curproc->inRAM[i] = page_index;
++}
++
++void insert_to_offsets_queue(int page_index){
++  struct proc *curproc = myproc();
++  int i;
++  for (i = 0; curproc->free_swapfile_offsets[i] != -1; i++) {
++    if (i == MAX_PYSC_PAGES)
++      panic("insert to offsets queue: error in inerstion!");
++  }
++  curproc->free_swapfile_offsets[i] = page_index;
++}
++
++
++
++void move_forward_in_offsets_queue(){//moves all the other offsets forward in line in the free offsets queue
++  struct proc* curproc = myproc();
++  int i;
++  for(i = 0; i < MAX_PYSC_PAGES-1; i++){
++    curproc->free_swapfile_offsets[i] = curproc->free_swapfile_offsets[i+1]; // moves everything to the left- one step closer
++  }
++  curproc->free_swapfile_offsets[MAX_PYSC_PAGES-1] = -1; //clear the last slot
++}
++
++void move_forward_in_inRAM_queue(int index){//moves all the other offsets forward in line in the inRAM queue from a certain point
++  struct proc* curproc = myproc();
++  while(index < MAX_PYSC_PAGES-1){
++    curproc->inRAM[index] = curproc->inRAM[index+1]; // moves everything to the left- one step closer
++  }
++  curproc->inRAM[MAX_PYSC_PAGES-1] = -1; //clear the last slot
++}
++
++int next_in_line(){
++  struct proc* curproc = myproc();
++  int offset = curproc->free_swapfile_offsets[0]; // get the first in line
++  
++  if(offset != -1) // we need to move the others closer
++    move_forward_in_offsets_queue();
++  
++  return offset;
++}
++
++int get_free_offset() {
++  struct proc* curproc = myproc();
++  int offset = next_in_line();
++  if(offset == -1){ //queue is empty
++    offset =curproc->free_swapfile_offset;
++    curproc->free_swapfile_offset = curproc->free_swapfile_offset + PGSIZE;
++  }
++  return offset;
++}
++
++
++///////////////////////ASSIGNMENT 3/////////////////////////////
++void deallocate_page(uint virtual_addr){  // this function is used in order to clear our 'pages' field in the proc struct. will be called only if allocation happend successfully!
++  struct proc* curproc = myproc();
++
++  int i;
++  int j;
++  for (i = 0; i < MAX_TOTAL_PAGES; i++) {
++    if ((curproc->pages[i].allocated != 0) && (curproc->pages[i].virtual_addr ==  virtual_addr)) {// finding the page we want to remove
++      curproc->pages[i].virtual_addr = 0;
++
++      #if defined(LAPA)
++        curproc->pages[i].age = 0xFFFFFFFF; // like we were asked
++      #else
++        curproc->pages[i].age = 0x00000000;
++      #endif
++
++      curproc->pages[i].allocated = 0;
++
++      /** If the page we want to remove is in the swap file, we want to remember it's offset, for future use **/
++      if(curproc->pages[i].in_RAM == 0)
++        insert_to_offsets_queue(curproc->pages[i].offset_in_swapfile);
++
++      curproc->pages[i].in_RAM = 0;
++      curproc->pages[i].offset_in_swapfile = -1;
++      break;
++    }
++  }
++  if (i == MAX_TOTAL_PAGES)
++    panic("page does not exist in our pages field!");
++
++  for (j = 0; j < MAX_PYSC_PAGES; j++) {  // find the page in the inRAM queue we added
++    if (curproc->inRAM[i] == i) {
++      move_forward_in_inRAM_queue(j); 
++      break;
++    }
++  }
++}
++
++///////////////////ASSIGNMENT 3- SELECT THE PAGE DEPENDING ON THE POLICY//////////////////////
++/** they all return an index to a cell in the 'pages' field of a proccess**/
++
++int select_for_NFUA(){  //with aging mechanism
++  struct proc* curproc = myproc();
++  int i;
++  int oldest = 0;
++  for(i = 1; i < MAX_PYSC_PAGES; i++){
++    if(curproc->pages[curproc->inRAM[i]].age < curproc->pages[curproc->inRAM[oldest]].age)  //  compare each page to the one next to him in order to save the oldest one
++      oldest = i;
++  }
++  int page_to_swap_index = curproc->inRAM[oldest];  // the index of the actual page
++  move_forward_in_inRAM_queue(oldest);  //  oldest is the cell number in inRAM array (we need it for the 'move forward' function in order to know from where to start moving the line)
++  return page_to_swap_index;
++}
++
++int select_for_LAPA(){
++  struct proc* curproc = myproc();
++  int oldest = 0xFFFFFFFF;
++  int i;
++  int index = -1;
++  int most_ones = 33; // more than the count of the bits (uint- 32 bit), just to catch the first one and then compare between all the others
++  for(i = 0; i<MAX_PYSC_PAGES; i++){
++    int count = 0;
++    int age = curproc->pages[curproc->inRAM[i]].age;
++    /**now, we count the number of the '1' in the age:**/
++    int j;
++    for(j = 0; j<32; j++){
++      if((1<<j) & (age))  // if there is '1' (xor-and)
++        count++;
++    }
++    if(count < most_ones){
++      most_ones = count;
++      index = i;
++      oldest = age;
++    }
++    else if(count == most_ones && age < oldest){  // maybe they have the same amount of '1's but this page is older..
++      index = i;
++      oldest = age;
++    }
++  }
++  if(index == -1)  // weird case, but just to make sure
++    panic("in LAPA: couldn't find any page!!");
++
++  /**now, lets collect everything we got**/
++  int page_to_swap_index = curproc->inRAM[index];
++  move_forward_in_inRAM_queue(index);
++  return page_to_swap_index;
++}
++
++int select_for_SCFIFO(){
++  struct proc* curproc = myproc();
++  int accessed_inRAM[MAX_PYSC_PAGES]; // save here all the pages in-ram that are 'accessed'
++  int inRAM_index = 0;
++
++  /**initialization**/
++  int i;
++  for(i = 0; i<MAX_PYSC_PAGES; i++)
++    accessed_inRAM[i] = -1;
++
++  int page_to_swap_index = -1;
++  for(i = 0; (i<MAX_PYSC_PAGES) && (page_to_swap_index == -1); i++){
++    pte_t *pte = (pte_t*)global_walkpgdir(curproc->pgdir, (char*) curproc->pages[curproc->inRAM[i]].virtual_addr, 0);  // the virtual address of a page that is in the RAM
++    /**first, we check if the page was accessed**/
++    if(*pte & PTE_AC){
++      *pte = TURN_OFF_PTE_AC(*pte);
++      accessed_inRAM[inRAM_index] = curproc->inRAM[i];  //  if it was accessed, add it to the array
++      inRAM_index++;
++    }
++    else{ // page was not accessed
++      page_to_swap_index = curproc->inRAM[i];  // we save that particular page and there is no reason to keep looking for another one
++      break;
++    }  
++  } 
++  if(page_to_swap_index == -1){  // if each one of them was accessed, we go back to the beginning. not the interesting part :/
++    page_to_swap_index = curproc->inRAM[0];
++    if(page_to_swap_index != -1) //we have the first page, now we can move all the others further in the queue
++      move_forward_in_inRAM_queue(0);
++    
++    else // there isn't even one page in the ram!
++      panic("in SCFIFO: no pages in ram queue!!");
++    return page_to_swap_index;
++  } 
++
++  /** if we got here, it means we got a page from the ram that was not accessed**/
++  /** here, we implement the 'clock' second chance fifo we learned in class- pretty much just reorginizing everything so that the 'arm' will now point at the next page**/
++  i++;  //start from the next page in the queue
++  int j = 0;
++  while((i < MAX_PYSC_PAGES) && (curproc->inRAM[i] != -1)){
++    curproc->inRAM[j] = curproc->inRAM[i];
++    i++;
++    j++;
++  }
++  int k = 0;
++  while(j < MAX_PYSC_PAGES){
++    curproc->inRAM[j] = accessed_inRAM[k];
++    j++;
++    k++;
++  }
++  return page_to_swap_index;
++}
++
++int select_for_AQ(){  // the most simple one- just tale the first in line
++  struct proc* curproc = myproc();
++  int page_to_swap_index = curproc->inRAM[0];
++  move_forward_in_inRAM_queue(0);
++  return page_to_swap_index;
++}
++
++
++void aging(){
++  struct proc *curproc = myproc();
++  int i;
++  for(i = 0; i<MAX_TOTAL_PAGES; i++){
++    if(curproc->pages[i].allocated){
++      curproc->pages[i].age= curproc->pages[i].age>>1; //right shift
++      pte_t* pte = (pte_t*) global_walkpgdir(curproc->pgdir, (void*)curproc->pages[i].virtual_addr, 0);
++      if(*pte & PTE_AC){    //if page was accessed
++        uint new_age = curproc->pages[i].age | 0x80000000;//adds '1' to the end
++        curproc->pages[i].age = new_age;
++        *pte = TURN_OFF_PTE_AC(*pte); //  turn off the accessed bit
++      }
++    }
++  }
++}
++
++void advance_for_AQ(){
++  struct proc* curproc = myproc();
++  int i;
++  for( i = MAX_PYSC_PAGES-1; i < 0; i--){
++    if(curproc->inRAM[i]!=-1){
++      int curr = curproc->inRAM[i];
++      int prev = curproc->inRAM[i-1];
++      pte_t* curr_pte = (pte_t*) global_walkpgdir(curproc->pgdir,(void*) curproc->pages[curr].virtual_addr,0);
++      pte_t* prev_pte = (pte_t*) global_walkpgdir(curproc->pgdir, (void*) curproc->pages[prev].virtual_addr,0);
++      /**now, we compare each 2 following pages: if the further one was not accessed but the one before him was, we should swap their places!**/
++      if(!(*curr_pte & PTE_AC) && (*prev_pte & PTE_AC)){
++        curproc->inRAM[i] = prev;
++        curproc->inRAM[i-1] = curr;
++      }
++    }
++  }
+ }
++///////////////////////////END/////////////////////////////////////
+\ No newline at end of file
+diff --git a/proc.h b/proc.h
+index f8d364e..d56679d 100644
+--- a/proc.h
++++ b/proc.h
+@@ -34,6 +34,15 @@ struct context {
+ 
+ enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+ 
++struct page {
++  uint virtual_addr;
++  int offset_in_swapfile;  //page's offset in the swap file 
++  uint age; // process age- for the policies
++  int is_swapped; // check if the page was swapped or not
++  int allocated;  // if the page 'exists' (?)
++  int in_RAM; //if the page is in the main memory or not
++};
++
+ // Per-process state
+ struct proc {
+   uint sz;                     // Size of process memory (bytes)
+@@ -50,7 +59,19 @@ struct proc {
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
+   //Swap file. must initiate with create swap file
+-  struct file *swapFile;      //page file
++  struct file *swapFile;       //page file
++
++  struct page pages[MAX_TOTAL_PAGES];
++  int inRAM[MAX_PYSC_PAGES];   // this is how we know how much space there is in the RAM for us
++  int free_swapfile_offsets[MAX_PYSC_PAGES]; //acts as a queue. has all the available offsets in the swapfile. the first one that got in will be returned. maintained by various functions in proc.c
++
++  uint free_swapfile_offset;
++
++  int total_allocated_pages;
++  uint page_faults_now; //number of page faults
++  uint swapped_pages_now; //number of swaps
++  uint total_swaps;
++  uint total_page_faults;
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff --git a/syscall.c b/syscall.c
+index ee85261..42f5281 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,10 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_getNumFreePages(void);
++extern int sys_getNumVirtPages(void);
++extern int sys_getNumPhysPages(void);
++
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +130,7 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_getNumFreePages] sys_getNumFreePages,
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..8f433cc 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_getNumFreePages 22
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..2fddb0b 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -36,6 +36,19 @@ sys_kill(void)
+   return kill(pid);
+ }
+ 
++int sys_getNumFreePages(void){
++  return getNumFreePages();
++}
++
++
++int sys_getNumPhysPages(void){
++  return getNumPhysPages();
++}
++
++int sys_getNumVirtPages(void){
++  return getNumVirtPages();
++}
++
+ int
+ sys_getpid(void)
+ {
+@@ -50,9 +63,11 @@ sys_sbrk(void)
+ 
+   if(argint(0, &n) < 0)
+     return -1;
++  
+   addr = myproc()->sz;
+   if(growproc(n) < 0)
+     return -1;
++
+   return addr;
+ }
+ 
+diff --git a/trap.c b/trap.c
+index 41c66eb..e5d7c93 100644
+--- a/trap.c
++++ b/trap.c
+@@ -32,20 +32,77 @@ idtinit(void)
+   lidt(idt, sizeof(idt));
+ }
+ 
++int COW_helper(uint va){
++    return pagefault(va);
++}
++
++int policies_helper(uint va){
++    struct proc* curproc = myproc();
++    uint my_page = PGROUNDDOWN(va);
++    int counter = 0;
++    int i;
++      for(i = 0; i < MAX_TOTAL_PAGES; i++){
++        if( ( curproc->pages[i].allocated == 1 ) && ( curproc->pages[i].in_RAM ) )
++          counter++;
++      }
++    if(counter == MAX_PYSC_PAGES)
++      swap_out(curproc->pgdir);
++
++    char* new_page_addr = kalloc();
++    if(new_page_addr == 0){  //meaning kalloc has failed!
++      /**  no need to call dealloc because no allocation happend **/
++      cprintf("in trap: kalloc failed!\n");    
++      return 0;//indicating something failed
++    }
++    memset(new_page_addr, 0, PGSIZE);
++    i=0;
++    while((i<MAX_TOTAL_PAGES) && (curproc->pages[i].virtual_addr != my_page))
++      i++;
++    
++    if(i==MAX_TOTAL_PAGES){//we reached the end
++      panic("in trap: couldn't find the page");
++      return 0;
++    }
++    
++    uint offset = curproc->pages[i].offset_in_swapfile;
++    /** 'populate' the page starting at new_page with everything related from the swap file **/
++    readFromSwapFile(curproc, new_page_addr, offset, PGSIZE);
++    pte_t *pte = (pte_t*)global_walkpgdir(curproc->pgdir,(char *) va,  0);
++    *pte = TURN_OFF_PTE_P(*pte);
++    *pte = TURN_ON_PTE_PG(*pte);
++    global_mappages(curproc->pgdir, (void *) my_page, PGSIZE, V2P(new_page_addr), PTE_W | PTE_U );
++
++    *pte = TURN_ON_PTE_P(*pte);
++    *pte = TURN_OFF_PTE_PG(*pte);
++
++    curproc->pages[i].in_RAM = 1;
++    insert_to_offsets_queue(curproc->pages[i].offset_in_swapfile);
++    curproc->pages[i].offset_in_swapfile = -1;
++    
++    insert_to_RAM_queue(i);
++    /**  REMOVED a page from the swap file, decrement the number of pages in the file ! **/
++    curproc->swapped_pages_now--;
++    
++    lapiceoi();
++    return 1; // PGFLT case break- success
++}
++
+ //PAGEBREAK: 41
+ void
+ trap(struct trapframe *tf)
+ {
++  struct proc* curproc = myproc();
+   if(tf->trapno == T_SYSCALL){
+-    if(myproc()->killed)
++    if(curproc->killed)
+       exit();
+     myproc()->tf = tf;
+     syscall();
+-    if(myproc()->killed)
++    if(curproc->killed)
+       exit();
+     return;
+   }
+ 
++
+   switch(tf->trapno){
+   case T_IRQ0 + IRQ_TIMER:
+     if(cpuid() == 0){
+@@ -73,11 +130,77 @@ trap(struct trapframe *tf)
+     break;
+   case T_IRQ0 + 7:
+   case T_IRQ0 + IRQ_SPURIOUS:
++
+     cprintf("cpu%d: spurious interrupt at %x:%x\n",
+             cpuid(), tf->cs, tf->eip);
+     lapiceoi();
+     break;
+ 
++ case T_PGFLT:
++  curproc->page_faults_now++;
++  uint va = rcr2();
++  ///////////////////////////ASSIGNMENT 3//////////////////////
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++  if(curproc->pid>2 &&global_walkpgdir(curproc->pgdir,(char *) va,  0)& PTE_PG){
++    cprintf("in policy\n");
++    uint my_page = PGROUNDDOWN(va);
++    int counter = 0;
++    int i;
++      for(i = 0; i < MAX_TOTAL_PAGES; i++){
++        if( ( curproc->pages[i].allocated == 1 ) && ( curproc->pages[i].in_RAM ) )
++          counter++;
++      }
++    if(counter == MAX_PYSC_PAGES)
++      swap_out(curproc->pgdir);
++
++    char* new_page_addr = kalloc();
++    if(new_page_addr == 0){  //meaning kalloc has failed!
++      /**  no need to call dealloc because no allocation happend **/
++      cprintf("in trap: kalloc failed!\n");    
++      
++    }
++    memset(new_page_addr, 0, PGSIZE);
++    i=0;
++    while((i<MAX_TOTAL_PAGES) && (curproc->pages[i].virtual_addr != my_page))
++      i++;
++    
++    if(i==MAX_TOTAL_PAGES){//we reached the end
++      panic("in trap: couldn't find the page");
++      
++    }
++    
++    uint offset = curproc->pages[i].offset_in_swapfile;
++    /** 'populate' the page starting at new_page with everything related from the swap file **/
++    readFromSwapFile(curproc, new_page_addr, offset, PGSIZE);
++    pte_t *pte = (pte_t*)global_walkpgdir(curproc->pgdir,(char *) va,  0);
++    *pte = TURN_OFF_PTE_P(*pte);
++    *pte = TURN_ON_PTE_PG(*pte);
++    global_mappages(curproc->pgdir, (void *) my_page, PGSIZE, V2P(new_page_addr), PTE_W | PTE_U );
++
++    *pte = TURN_ON_PTE_P(*pte);
++    *pte = TURN_OFF_PTE_PG(*pte);
++
++    curproc->pages[i].in_RAM = 1;
++    insert_to_offsets_queue(curproc->pages[i].offset_in_swapfile);
++    curproc->pages[i].offset_in_swapfile = -1;
++    
++    insert_to_RAM_queue(i);
++    /**  REMOVED a page from the swap file, decrement the number of pages in the file ! **/
++    curproc->swapped_pages_now--;
++      
++      //policies_helper(va);
++      break;
++  }
++  else{
++    cprintf("in cow with pid: %x\n", curproc->pid);
++
++    if(!(COW_helper(va)))
++     break; 
++  } 
++  #endif
++    lapiceoi();
++    break; // PGFLT case break
++
+   //PAGEBREAK: 13
+   default:
+     if(myproc() == 0 || (tf->cs&3) == 0){
+diff --git a/types.h b/types.h
+index e4adf64..801c541 100644
+--- a/types.h
++++ b/types.h
+@@ -2,3 +2,6 @@ typedef unsigned int   uint;
+ typedef unsigned short ushort;
+ typedef unsigned char  uchar;
+ typedef uint pde_t;
++
++#define MAX_PYSC_PAGES  16
++#define MAX_TOTAL_PAGES 32
+\ No newline at end of file
+diff --git a/user.h b/user.h
+index 4f99c52..41b83db 100644
+--- a/user.h
++++ b/user.h
+@@ -23,6 +23,9 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int getNumFreePages(void);
++int getNumVirtPages(void);
++int getNumPhysPages(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/vm.c b/vm.c
+index 7134cff..b630a58 100644
+--- a/vm.c
++++ b/vm.c
+@@ -6,10 +6,13 @@
+ #include "mmu.h"
+ #include "proc.h"
+ #include "elf.h"
+-
++#include "spinlock.h"
+ extern char data[];  // defined by kernel.ld
+ pde_t *kpgdir;  // for use in scheduler()
+ 
++struct spinlock lock;
++char pg_refcount[PHYSTOP >> PTXSHIFT]; // array to store refcount
++
+ // Set up CPU's kernel segment descriptors.
+ // Run once on entry on each CPU.
+ void
+@@ -187,6 +190,10 @@ inituvm(pde_t *pgdir, char *init, uint sz)
+   if(sz >= PGSIZE)
+     panic("inituvm: more than a page");
+   mem = kalloc();
++/** after initializing, one link is established**/
++  acquire(&lock);
++  pg_refcount[V2P(mem) >>PTXSHIFT] = pg_refcount[V2P(mem)>> PTXSHIFT] + 1 ;
++  release(&lock);
+   memset(mem, 0, PGSIZE);
+   mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
+   memmove(mem, init, sz);
+@@ -221,6 +228,7 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
+ int
+ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+ {
++  struct proc *curproc = myproc();
+   char *mem;
+   uint a;
+ 
+@@ -230,20 +238,53 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+     return oldsz;
+ 
+   a = PGROUNDUP(oldsz);
++
++
++  //////////ASSIGNMENT 3///////////////////////
+   for(; a < newsz; a += PGSIZE){
++    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++      if((curproc->pid > 2) && (a >= PGSIZE * MAX_PYSC_PAGES)){ //we do not allow to have more than [PGSIZE * MAX_PYSC_PAGES] space for each proccess, except for the first 2 proccess (init and sh)
++        swap_out(pgdir);
++      }
++    #endif
++//////////////////////////////////////////////
+     mem = kalloc();
+     if(mem == 0){
+       cprintf("allocuvm out of memory\n");
+-      deallocuvm(pgdir, newsz, oldsz);
++      deallocuvm(pgdir, newsz, oldsz, 0); // if something failed, there is no reason to call deallocate_pages as well
+       return 0;
+     }
+-    memset(mem, 0, PGSIZE);
+-    if(mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
+-      cprintf("allocuvm out of memory (2)\n");
+-      deallocuvm(pgdir, newsz, oldsz);
+-      kfree(mem);
+-      return 0;
++
++  memset(mem, 0, PGSIZE);
++    mappages(pgdir, (char*)a, PGSIZE, V2P(mem), PTE_W|PTE_U);
++    acquire(&lock);
++    pg_refcount[V2P(mem) >> 12] = pg_refcount[V2P(mem) >> 12] + 1 ;
++release(&lock);
++
++    ////////ASSIGNMENT 3//////////////////////
++    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++    pte_t *pte;
++    if(curproc->pid > 2) // again, this is only allowed for the first 2 proccess' (init and sh). any other proccess will get in the 'if'
++    {
++      int page_index;
++      for(page_index = 0;page_index<MAX_TOTAL_PAGES; page_index++){
++        if(curproc->pages[page_index].allocated !=1){  //meaning we found an empty cell
++          curproc->pages[page_index].allocated = 1;
++          curproc->pages[page_index].virtual_addr = a; 
++          curproc->pages[page_index].in_RAM = 1; //  the new page is inside the main memory
++          curproc->pages[page_index].offset_in_swapfile = -1; // the page is NOT in the swap file
++
++      insert_to_RAM_queue(page_index);
++        }
++      }
++      curproc->total_allocated_pages++;
++
++      pte = walkpgdir(pgdir, (char *)a , 0);
++      *pte=TURN_ON_PTE_P(*pte); //  the new page is inside the main memory
++      *pte=TURN_OFF_PTE_PG(*pte); // no paging on this page
++      
+     }
++#endif
+   }
+   return newsz;
+ }
+@@ -252,9 +293,13 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+ // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+ // need to be less than oldsz.  oldsz can be larger than the actual
+ // process size.  Returns the new process size.
++//the flag was added for ASSIGNMENT 3 in order to know whether we need to call deallocatepages or not (depends on whether allocation succeeded or not)
+ int
+-deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
++deallocuvm(pde_t *pgdir, uint oldsz, uint newsz, int flag)
+ {
++  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++    struct proc* curproc = myproc();
++  #endif
+   pte_t *pte;
+   uint a, pa;
+ 
+@@ -265,15 +310,35 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+   for(; a  < oldsz; a += PGSIZE){
+     pte = walkpgdir(pgdir, (char*)a, 0);
+     if(!pte)
+-      a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
++      a += (NPTENTRIES - 1) * PGSIZE;
+     else if((*pte & PTE_P) != 0){
+       pa = PTE_ADDR(*pte);
+       if(pa == 0)
+         panic("kfree");
++      #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
++        if(curproc->pid > 2 && ((*pte & PTE_PG) != 0)){
++          pa = PTE_ADDR(*pte);
++          if(pa == 0)
++            panic("in deallocuvm: no such address!");
++          if(curproc->pid > 2 && flag == 1)
++            deallocate_page(a);
++          *pte = 0;
++        }
++      #endif
++
++      acquire(&lock);
++      // if no other page table is pointing to the page,remove it
++      if(--pg_refcount[pa >> PTXSHIFT] == 0)
++      {
+       char *v = P2V(pa);
+       kfree(v);
+-      *pte = 0;
++      }
++      release(&lock);
++
++
+     }
++     
++     
+   }
+   return newsz;
+ }
+@@ -287,7 +352,7 @@ freevm(pde_t *pgdir)
+ 
+   if(pgdir == 0)
+     panic("freevm: no pgdir");
+-  deallocuvm(pgdir, KERNBASE, 0);
++  deallocuvm(pgdir, KERNBASE, 0, 0);  // no need to call deallocate_page
+   for(i = 0; i < NPDENTRIES; i++){
+     if(pgdir[i] & PTE_P){
+       char * v = P2V(PTE_ADDR(pgdir[i]));
+@@ -333,14 +398,19 @@ copyuvm(pde_t *pgdir, uint sz)
+       goto bad;
+     memmove(mem, (char*)P2V(pa), PGSIZE);
+     if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+-      kfree(mem);
+       goto bad;
++      //kfree(mem);
+     }
++     acquire(&lock);
++    pg_refcount[pa >> PTXSHIFT] = pg_refcount[pa >> PTXSHIFT] + 1; // increase ref count
++release(&lock);
+   }
++  lcr3(V2P(pgdir));
+   return d;
+ 
+ bad:
+   freevm(d);
++  lcr3(V2P(pgdir));
+   return 0;
+ }
+ 
+@@ -385,6 +455,63 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
+   return 0;
+ }
+ 
++uint select_page(){ //depending on the policy, returns the address of the page that needs to be swapped
++  struct proc* curproc = myproc();
++
++  int page_to_return_index = 0;
++  #if defined(NFUA)
++    page_to_return_index = select_for_NFUA();
++  #endif
++
++  #if defined(LAPA)
++    page_to_return_index = select_for_LAPA();
++  #endif
++
++  #if defined(SCFIFO)
++    page_to_return_index = select_for_SCFIFO();
++  #endif
++
++  #if defined(AQ)
++    page_to_return_index = select_for_AQ();
++  #endif
++  uint final_page = curproc->pages[page_to_return_index].virtual_addr;
++  int k;
++  for(k=0;k<MAX_TOTAL_PAGES;k++){
++  }
++  return final_page;
++}
++
++char* swap_out(pde_t* pgdir){
++  struct proc* curproc = myproc();
++  pte_t *pte;
++  uint page_to_swap_addr =select_page();
++  int offset_to_write = get_free_offset();
++  writeToSwapFile(curproc, (char*) page_to_swap_addr, offset_to_write, PGSIZE); // write the page in the free space in the swap file
++
++  int i;
++
++  for(i = 0; i<MAX_TOTAL_PAGES; i++){//finding the page in the proc's pages array
++    if(curproc->pages[i].virtual_addr == page_to_swap_addr){
++      /** we wrote it in the swap file, now we need to update it in the proc's pages array**/
++      curproc->pages[i].offset_in_swapfile = offset_to_write;
++      curproc->pages[i].in_RAM = 0;
++      curproc->pages[i].is_swapped = 1;
++      break;
++    }
++  } 
++  curproc->swapped_pages_now++;
++  curproc->total_swaps++;
++
++  pte = walkpgdir(pgdir, (char *) page_to_swap_addr, 0); // getting the page table entry for this page
++  *pte = TURN_OFF_PTE_P(*pte); // the bit is not present anymore
++  *pte = TURN_ON_PTE_PG(*pte); // paging has accured and the page is swapped
++  uint p_address = PTE_ADDR(*pte);
++  char* virtual_addr = P2V(p_address);
++  kfree(virtual_addr); //opposite of malloc()- frees the memory of a desireable address
++  lcr3(V2P(curproc->pgdir)); // refreshing TLB==refreshing the CR3 register
++  return virtual_addr;
++}
++
+ //PAGEBREAK!
+ // Blank page.
+ //PAGEBREAK!
+@@ -392,3 +519,208 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
+ //PAGEBREAK!
+ // Blank page.
+ 
++
++////////////////////////ASSIGNMENT 3-TASK 2/////////////////////
++pde_t*
++cowuvm(pde_t *pgdir, uint sz)
++{
++  pde_t *d;
++  pte_t *pte;
++  uint pa, i, flags;
++
++  if((d = setupkvm()) == 0)
++    return 0;
++
++  for(i = 0; i < sz; i += PGSIZE){
++    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
++      panic("cowuvm: pte should exist");
++    if(!(*pte & PTE_P))
++      panic("copyuvm: page not present");
++
++    // make the permissions for the parent_page read only
++    *pte &= ~PTE_W;
++    pa = PTE_ADDR(*pte);
++    flags = PTE_FLAGS(*pte);
++
++    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
++      goto bad;
++    acquire(&lock);
++    pg_refcount[pa >> PTXSHIFT] = pg_refcount[pa >> PTXSHIFT] + 1; // increase reference count of that permanent page.
++    release(&lock);
++  }
++  lcr3(V2P(pgdir)); // Flush TLB for original process
++  return d;
++
++bad:
++  freevm(d);
++  // Even though we failed to copy, we should flush TLB, since
++  // some entries in the original process page table have been changed
++  lcr3(V2P(pgdir));
++  return 0;
++}
++///////////////////END////////////////////
++
++/*
++int
++pagefault(uint va)  // va is the faulty address which we want to 'fix'
++{
++  pte_t *pte;
++  struct proc* curproc = myproc();
++  uint pa, npa, er = curproc->tf->err, flags;
++  char *mem;
++
++  // Obtain the start of the page that the faulty virtual address belongs to
++  char *a = (char*)PGROUNDDOWN((uint)va);
++
++  // fault is not for user address - kill process
++  if(va >= KERNBASE || (pte = walkpgdir(curproc->pgdir, a, 0)) == 0){
++    cprintf("pid %d %s: Page fault--access to invalid address.\n", curproc->pid, curproc->name);
++    return 0;
++  }
++
++  // write fault for a user address
++  if(er & FEC_WR){
++    // Check if the fault is for an address whose page table includes the PTE_COW flag
++    // If not, kill the program as usual
++    if(!(*pte & PTE_COW)){
++      return 0;
++    } else {
++      pa = PTE_ADDR(*pte);  //physical address
++      char *v = P2V(pa);
++      flags = PTE_FLAGS(*pte);
++
++      // get reference count for faulty page (how many are linked)
++      int refs = getRefs(v);
++
++      // page has more than one reference
++      if(refs > 1){
++        // allocate a new page
++        mem = kalloc();
++
++        // Copies memory from the virtual address gotten from fauly pte and copies PGSIZE bytes to mem
++        memmove(mem, v, PGSIZE);
++
++        // virtual address for new page
++        npa = V2P(mem);
++        // Point the PTE pointer to the newly allocated page
++        *pte = npa | flags | PTE_P | PTE_W;
++
++        // invalidate TLB
++        lcr3(V2P(curproc->pgdir)); 
++
++        // decrement ref count for old page
++        kdec(v);
++      }
++      // page has only one reference, so we can safely write to the page as well (so we'll change the flag to 'write' as well)
++      else {
++        *pte |= PTE_W;
++        *pte &= ~PTE_COW;
++
++        lcr3(V2P(curproc->pgdir)); 
++      }
++    }
++  } else{ // not a write fault
++    return 0;
++  }
++  return 1; //success!
++}
++*/
++
++int 
++pagefault(uint err_code)
++{
++  // get the faulting virtual address from the CR2 register
++  uint va = rcr2();
++  uint pa;
++  pte_t *pte;
++  char *mem;
++  struct proc* proc = myproc();
++
++  if(va >= KERNBASE)
++  {
++    //Mapped to kernel code
++    cprintf("Illegal memory access on cpu addr  kill proc  with pid \n"
++                                            );
++    proc->killed = 1;
++    return 1;
++  }
++  if((pte = walkpgdir(proc->pgdir, (void*)va, 0))==0)
++  {
++    //Point to null
++    cprintf("1Illegal memory access on cpu addr 0x%x, kill proc %s with pid %d\n",
++                                          va, proc->name, proc->pid);
++    proc->killed = 1;
++    return 1;
++  }
++  if(!(*pte & PTE_U))
++  {
++    // User cannot access
++    cprintf("2Illegal memory access on cpu addr 0x%x, kill proc %s with pid %d\n",
++                                           va, proc->name, proc->pid);
++    proc->killed = 1;
++    return 1;
++  }
++    if(!(*pte & PTE_P))
++  {
++    //Not present
++    cprintf("3Illegal memory access on cpu  addr 0x%x, kill proc %s with pid %d\n",
++                                            va, proc->name, proc->pid);
++    proc->killed = 1;
++    return 1;
++  }
++  if(*pte & PTE_W)
++  {
++    panic("Unknown page fault due to a writable pte");
++  }
++  else
++  {
++    // get the physical address from the  given page table entry
++    pa = PTE_ADDR(*pte);
++    acquire(&lock);
++    if(pg_refcount[pa >> PTXSHIFT] == 1)
++    {
++      release(&lock);
++      *pte |= PTE_W;  // remove the read-only restriction on the trapping page
++    }
++    else
++    {
++      // Current process is the first one that tries to write to this page
++      if(pg_refcount[pa >> PTXSHIFT] > 1)
++      {
++        release(&lock);
++        if((mem = kalloc()) == 0)
++        {
++          // Out of memory
++          cprintf("Illegal memory access");
++          proc->killed = 1;
++          return 1;
++        }
++        // copy the contents from the original memory page pointed the virtual address
++        memmove(mem, (char*)P2V(pa), PGSIZE);
++        acquire(&lock);
++        pg_refcount[pa >> PTXSHIFT] = pg_refcount[pa >> PTXSHIFT] - 1;
++        pg_refcount[V2P(mem) >> PTXSHIFT] = pg_refcount[V2P(mem) >> PTXSHIFT] + 1;
++        release(&lock);
++        *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;  // point the given page table entry to the new page
++      }
++      else
++      {
++        release(&lock);
++        panic("Pagefault due to wrong ref count");
++      }
++    }
++    // Flush TLB for process since page table entries changed
++    lcr3(V2P(proc->pgdir));
++    return 1;
++  }
++  return 1;
++}
++
++
++/** no idea why, but you can't call walkpgdir and mappages on their own... --\_('_')_/-- **/
++uint global_walkpgdir(pde_t* pgdir, void* va, int alloc){
++  return (uint) walkpgdir(pgdir, va, alloc);
++}
++int global_mappages(pde_t* pgdir, void* va, uint size, uint pa, int perm){
++  return mappages(pgdir, va, size, pa, perm);
++}
+\ No newline at end of file
